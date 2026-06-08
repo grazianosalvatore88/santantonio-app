@@ -14,6 +14,9 @@ import {
   dbDeleteMutaRows,
   dbSaveMuta,
   dbImportRows,
+  listAdmins,
+  createAdmin,
+  deleteAdmin,
 } from "./dataApi";
 
 const ASSET = "/assets/";
@@ -2475,27 +2478,166 @@ function AdminImportPage({
 
 
 
-function AdminUsersPage({ setPage }) {
+function AdminUsersPage({ data, setPage, showToast }) {
+  const [admins, setAdmins] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [form, setForm] = useState({
+    email: "",
+    password: "",
+    ruolo: "admin_manicchia",
+    manicchiaId: data.manicchie[0]?.id || "",
+  });
+
+  async function carica() {
+    setLoading(true);
+    try {
+      setAdmins(await listAdmins());
+    } catch (e) {
+      showToast?.("error", e?.message || "Errore nel caricamento admin.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    carica();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function aggiungi() {
+    if (!form.email.trim() || !form.password) {
+      showToast?.("error", "Inserisci email e password.");
+      return;
+    }
+    if (form.password.length < 6) {
+      showToast?.("error", "La password deve avere almeno 6 caratteri.");
+      return;
+    }
+    setBusy(true);
+    try {
+      await createAdmin({
+        email: form.email,
+        password: form.password,
+        ruolo: form.ruolo,
+        manicchiaId: form.ruolo === "super_admin" ? null : form.manicchiaId,
+      });
+      await carica();
+      setForm({
+        email: "",
+        password: "",
+        ruolo: "admin_manicchia",
+        manicchiaId: data.manicchie[0]?.id || "",
+      });
+      showToast?.("success", "Admin creato correttamente.");
+    } catch (e) {
+      showToast?.("error", e?.message || "Errore durante la creazione.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function elimina(a) {
+    setBusy(true);
+    try {
+      await deleteAdmin(a.userId);
+      await carica();
+      showToast?.("success", "Admin eliminato correttamente.");
+    } catch (e) {
+      showToast?.("error", e?.message || "Errore durante l'eliminazione.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <section>
       <Header title="Gestione Admin" onBack={() => setPage("admin")} />
-      <div className="panel">
-        <p style={{ margin: 0, color: "#6a625d", lineHeight: 1.5 }}>
-          Gli account amministratore si gestiscono direttamente da Supabase, per
-          motivi di sicurezza (non è possibile crearli in modo sicuro dal
-          browser):
-        </p>
-        <ol style={{ color: "#6a625d", lineHeight: 1.6, paddingLeft: 18, marginBottom: 0 }}>
-          <li>
-            <b>Authentication → Users → Add user</b>: crea l'utente con email e
-            password.
-          </li>
-          <li>
-            <b>SQL Editor</b>: aggiungi una riga nella tabella <code>profili</code>{" "}
-            con il suo UID, scegliendo il ruolo (<code>super_admin</code> oppure{" "}
-            <code>admin_manicchia</code>) e l'eventuale manicchia.
-          </li>
-        </ol>
+
+      <div className="panel admin-form">
+        <label>
+          Email
+          <input
+            type="email"
+            value={form.email}
+            onChange={(e) => setForm({ ...form, email: e.target.value })}
+            placeholder="Inserisci email"
+          />
+        </label>
+
+        <label>
+          Password
+          <input
+            type="password"
+            value={form.password}
+            onChange={(e) => setForm({ ...form, password: e.target.value })}
+            placeholder="Almeno 6 caratteri"
+          />
+        </label>
+
+        <label>
+          Ruolo
+          <select
+            value={form.ruolo}
+            onChange={(e) => setForm({ ...form, ruolo: e.target.value })}
+          >
+            <option value="admin_manicchia">Admin di manicchia</option>
+            <option value="super_admin">Super admin</option>
+          </select>
+        </label>
+
+        {form.ruolo === "admin_manicchia" && (
+          <label>
+            Manicchia
+            <select
+              value={form.manicchiaId}
+              onChange={(e) =>
+                setForm({ ...form, manicchiaId: e.target.value })
+              }
+            >
+              {data.manicchie.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.nome}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+
+        <button
+          type="button"
+          className="primary-button"
+          onClick={aggiungi}
+          disabled={busy}
+        >
+          {busy ? "Attendi…" : "Aggiungi"}
+        </button>
+      </div>
+
+      <div className="list-card">
+        {loading ? (
+          <div className="list-empty">Caricamento…</div>
+        ) : admins.length === 0 ? (
+          <div className="list-empty">Nessun admin.</div>
+        ) : (
+          admins.map((a) => (
+            <div className="list-row" key={a.userId}>
+              <div className="row-text">
+                <strong>{a.email}</strong>
+                <span>
+                  {a.ruolo === "super_admin"
+                    ? "Super admin"
+                    : `Admin · ${getManicchiaName(data, a.manicchiaId)}`}
+                </span>
+              </div>
+              <IconButton
+                kind="delete"
+                label="Elimina admin"
+                onClick={() => elimina(a)}
+              />
+            </div>
+          ))
+        )}
       </div>
     </section>
   );

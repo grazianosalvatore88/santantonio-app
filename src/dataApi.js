@@ -14,6 +14,14 @@ const norm = (v) =>
     .trim()
     .toLowerCase();
 
+// Formatta un nome: iniziale maiuscola di ogni parola, resto minuscolo.
+// Es: "MARIO rossi" -> "Mario Rossi", "d'angelo" -> "D'Angelo".
+const titleCase = (v) =>
+  String(v ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/(^|[\s'’\-])(\p{L})/gu, (_, sep, ch) => sep + ch.toUpperCase());
+
 // ---------------- LETTURA ----------------
 
 export async function fetchAllData() {
@@ -120,9 +128,9 @@ export async function dbAddCeraiolo(manicchiaId, { nome, cognome, soprannome }) 
     .from("ceraioli")
     .insert({
       manicchia_id: manicchiaId,
-      nome: nome.trim(),
-      cognome: cognome.trim(),
-      soprannome: (soprannome || "").trim(),
+      nome: titleCase(nome),
+      cognome: titleCase(cognome),
+      soprannome: titleCase(soprannome),
     })
     .select()
     .single();
@@ -275,9 +283,9 @@ export async function dbImportRows(rows, data) {
     if (!ceraioliById.has(k) && !daCreare.has(k)) {
       daCreare.set(k, {
         manicchia_id: r.manicchiaId,
-        nome: r.nome.trim(),
-        cognome: r.cognome.trim(),
-        soprannome: (r.soprannome || "").trim(),
+        nome: titleCase(r.nome),
+        cognome: titleCase(r.cognome),
+        soprannome: titleCase(r.soprannome),
       });
     }
   });
@@ -312,15 +320,25 @@ export async function dbImportRows(rows, data) {
       ceraioloKey(r.manicchiaId, r.nome, r.cognome, r.soprannome)
     );
     if (!ceraioloId) return;
-    const sig = `${r.manicchiaId}|${norm(r.tipoCero)}|${Number(r.anno)}|${norm(r.pezzo)}|${norm(r.muta)}|${norm(r.posizione)}|${ceraioloId}`;
+
+    // Usa la grafia UFFICIALE del pezzo e della muta (non quella del file).
+    const pezzo = pezziByKey.get(
+      `${r.manicchiaId}|${norm(r.tipoCero)}|${norm(r.pezzo)}`
+    );
+    const pezzoNome = pezzo ? pezzo.nome : r.pezzo;
+    const mutaNome = pezzo
+      ? pezzo.mute.find((m) => norm(m) === norm(r.muta)) || r.muta
+      : r.muta;
+
+    const sig = `${r.manicchiaId}|${norm(r.tipoCero)}|${Number(r.anno)}|${norm(pezzoNome)}|${norm(mutaNome)}|${norm(r.posizione)}|${ceraioloId}`;
     if (esistenti.has(sig)) return;
     esistenti.add(sig);
     daInserire.push({
       manicchiaId: r.manicchiaId,
       tipoCero: r.tipoCero,
       anno: r.anno,
-      pezzo: r.pezzo,
-      muta: r.muta,
+      pezzo: pezzoNome,
+      muta: mutaNome,
       posizione: r.posizione,
       ceraioloId,
     });
@@ -329,4 +347,37 @@ export async function dbImportRows(rows, data) {
   await dbInsertPartecipazioni(daInserire);
 
   return { importate: daInserire.length, ceraioliCreati: creati };
+}
+
+// --- GESTIONE ADMIN (tramite Edge Function sicura "admin-management") ---
+
+async function callAdminFn(action, payload) {
+  const { data, error } = await supabase.functions.invoke("admin-management", {
+    body: { action, payload },
+  });
+  if (error) {
+    let msg = error.message;
+    try {
+      const body = await error.context?.json?.();
+      if (body?.error) msg = body.error;
+    } catch (_) {
+      // ignora: usa il messaggio generico
+    }
+    throw new Error(msg || "Errore della funzione admin.");
+  }
+  if (data?.error) throw new Error(data.error);
+  return data;
+}
+
+export async function listAdmins() {
+  const data = await callAdminFn("list");
+  return data.admins || [];
+}
+
+export async function createAdmin({ email, password, ruolo, manicchiaId }) {
+  return callAdminFn("create", { email, password, ruolo, manicchiaId });
+}
+
+export async function deleteAdmin(userId) {
+  return callAdminFn("delete", { userId });
 }
