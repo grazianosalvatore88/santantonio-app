@@ -21,6 +21,8 @@ import {
 
 const ASSET = "/assets/";
 
+const APP_VERSION = "1.0.0";
+
 const assets = {
   logoMenuHome: `${ASSET}logo-menu-home.png`,
   palazzoBg: `${ASSET}palazzo-bg.png`,
@@ -869,6 +871,103 @@ function Home({ data, setPage }) {
         <span>Accesso riservato</span>
       </button>
       <div className="reserved-line" />
+
+      <div className="home-footer">
+        <button type="button" onClick={() => setPage("info")}>
+          Info &amp; Privacy
+        </button>
+      </div>
+    </section>
+  );
+}
+
+// Dati modificabili per le pagine Privacy/Info
+const EMAIL_CONTATTO = "INSERISCI-EMAIL@esempio.it"; // <-- da sostituire
+
+function PrivacyPage({ setPage }) {
+  return (
+    <section>
+      <Header title="Privacy" onBack={() => setPage("home")} />
+      <div className="doc-page">
+        <p className="doc-updated">Ultimo aggiornamento: giugno 2026</p>
+
+        <p>
+          Questo archivio storico raccoglie e mostra informazioni sulla
+          partecipazione dei ceraioli alla Festa dei Ceri di Sant'Antonio. Qui
+          spieghiamo quali dati tratta e come.
+        </p>
+
+        <h3>Contatti</h3>
+        <p>
+          Per qualsiasi richiesta puoi scrivere a{" "}
+          <strong>{EMAIL_CONTATTO}</strong>.
+        </p>
+
+        <h3>Quali dati trattiamo</h3>
+        <p>
+          Dati anagrafici dei ceraioli (nome, cognome, eventuale soprannome) e
+          lo storico delle loro partecipazioni (anno, pezzo, muta, posizione).
+          Per gli amministratori dell'archivio viene gestito un account di
+          accesso (email e password).
+        </p>
+
+        <h3>Perché li trattiamo</h3>
+        <p>
+          Per documentare e conservare la memoria storica della festa e renderla
+          consultabile alla comunità.
+        </p>
+
+        <h3>Chi può vederli</h3>
+        <p>
+          L'archivio è pubblico: i dati di partecipazione sono consultabili da
+          chiunque. Solo gli amministratori autorizzati possono aggiungere o
+          modificare i dati.
+        </p>
+
+        <h3>Dove sono conservati</h3>
+        <p>
+          I dati sono salvati sui server del servizio Supabase. L'app{" "}
+          <strong>non usa pubblicità né strumenti di tracciamento</strong>. Nel
+          browser viene salvato solo un dato tecnico necessario a mantenere
+          l'accesso degli amministratori (non è un cookie di profilazione).
+        </p>
+
+        <h3>I tuoi diritti</h3>
+        <p>
+          Puoi chiedere di accedere ai dati che ti riguardano, di correggerli o
+          di rimuoverli, scrivendo a {EMAIL_CONTATTO}. Daremo seguito alle
+          richieste nei tempi previsti dalla normativa.
+        </p>
+      </div>
+    </section>
+  );
+}
+
+function InfoPage({ setPage }) {
+  return (
+    <section>
+      <Header title="Info" onBack={() => setPage("home")} />
+      <div className="doc-page">
+        <h3>Archivio storico</h3>
+        <p>
+          Un archivio digitale per conservare e consultare la storia delle mute
+          e dei ceraioli del cero di S.Antonio.
+        </p>
+
+        <h3>Versione</h3>
+        <p>App versione {APP_VERSION}</p>
+
+        <h3>Contatti</h3>
+        <p>{EMAIL_CONTATTO}</p>
+
+        <button
+          type="button"
+          className="doc-link"
+          onClick={() => setPage("privacy")}
+        >
+          Leggi la Privacy
+        </button>
+      </div>
     </section>
   );
 }
@@ -2817,6 +2916,8 @@ export default function App() {
     const publicData = getVisibleData(data, activeManicchiaId);
 
     if (page === "home") return <Home data={publicData} setPage={setPage} />;
+    if (page === "privacy") return <PrivacyPage setPage={setPage} />;
+    if (page === "info") return <InfoPage setPage={setPage} />;
     if (page === "archive") {
       return (
         <ArchivePage
