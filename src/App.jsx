@@ -53,7 +53,12 @@ const POSIZIONI_BASE = [
 
 const POSIZIONI_LEFT = POSIZIONI_BASE.slice(0, 4);
 const POSIZIONI_RIGHT = POSIZIONI_BASE.slice(4, 8);
-const POSIZIONI_EXTRA = ["Capo 10", "Capo 5"];
+const POSIZIONI_EXTRA = [
+  "Capo 10",
+  "Barelone davanti",
+  "Barelone dietro",
+  "Capo 5",
+];
 
 const MANICCHIA_BASE = {
   id: "torre-calzolari",
@@ -1631,10 +1636,9 @@ function AdminMutaPage({
       pezzoId: pezzoObj?.id || visibleData.pezzi[0]?.id || "",
       muta: editTarget.muta,
       scelte: scelteInit,
-      extra: {
-        "Capo 10": Boolean(scelteInit["Capo 10"]),
-        "Capo 5": Boolean(scelteInit["Capo 5"]),
-      },
+      extra: Object.fromEntries(
+        POSIZIONI_EXTRA.map((p) => [p, Boolean(scelteInit[p])])
+      ),
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -1653,10 +1657,8 @@ function AdminMutaPage({
 
   const [scelte, setScelte] = useState(initialEdit?.scelte ?? {});
   const [extraAttive, setExtraAttive] = useState(
-    initialEdit?.extra ?? {
-      "Capo 10": false,
-      "Capo 5": false,
-    }
+    initialEdit?.extra ??
+      Object.fromEntries(POSIZIONI_EXTRA.map((p) => [p, false]))
   );
 
   function getAvailableCeraioli(posizioneCorrente) {
@@ -1683,10 +1685,7 @@ function AdminMutaPage({
     setPezzoId(id);
     setMuta(nuovoPezzo?.mute?.[0] || "");
     setScelte({});
-    setExtraAttive({
-      "Capo 10": false,
-      "Capo 5": false,
-    });
+    setExtraAttive(Object.fromEntries(POSIZIONI_EXTRA.map((p) => [p, false])));
   }
 
   async function salva() {
