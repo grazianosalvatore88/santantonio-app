@@ -22,84 +22,28 @@ const titleCase = (v) =>
     .toLowerCase()
     .replace(/(^|[\s'’\-])(\p{L})/gu, (_, sep, ch) => sep + ch.toUpperCase());
 
-// --- Normalizzazione "forte" per confrontare le persone ---
-// minuscole, spazi singoli, senza accenti, apostrofi e punti.
-const normPersona = (v) =>
+
+// Normalizzazione robusta per confronto ceraioli in import:
+// ignora maiuscole/minuscole, accenti, apostrofi, trattini e spazi multipli.
+const personNorm = (v) =>
   String(v ?? "")
+    .trim()
+    .toLowerCase()
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
-    .replace(/['’.]/g, "")
+    .replace(/[’']/g, " ")
+    .replace(/[^a-z0-9]+/g, " ")
     .replace(/\s+/g, " ")
-    .trim()
-    .toLowerCase();
+    .trim();
 
-const compatta = (v) => normPersona(v).replace(/\s+/g, "");
-
-// Vero se a e b differiscono al massimo di un carattere (refusi: "Rosssi" ~ "Rossi").
-function distanzaMax1(a, b) {
-  if (a === b) return true;
-  const la = a.length;
-  const lb = b.length;
-  if (Math.abs(la - lb) > 1) return false;
-  let i = 0;
-  let j = 0;
-  let diff = 0;
-  while (i < la && j < lb) {
-    if (a[i] === b[j]) {
-      i++;
-      j++;
-      continue;
-    }
-    diff++;
-    if (diff > 1) return false;
-    if (la === lb) {
-      i++;
-      j++;
-    } else if (la > lb) {
-      i++;
-    } else {
-      j++;
-    }
-  }
-  return diff + (la - i) + (lb - j) <= 1;
-}
-
-// Classifica un nominativo del file rispetto ai ceraioli della manicchia:
-//  { tipo: "certo", ceraiolo }            stesso nome+cognome (anche invertiti)
-//  { tipo: "sospetto", candidati: [...] } somiglianze da confermare a mano
-//  { tipo: "nuovo" }                      nessuna corrispondenza
-export function analizzaCeraioloImport(ceraioli, manicchiaId, nome, cognome) {
-  const n = normPersona(nome);
-  const c = normPersona(cognome);
-  const stessi = ceraioli.filter((x) => x.manicchiaId === manicchiaId);
-
-  const certo = stessi.find((x) => {
-    const xn = normPersona(x.nome);
-    const xc = normPersona(x.cognome);
-    return (xn === n && xc === c) || (xn === c && xc === n);
-  });
-  if (certo) return { tipo: "certo", ceraiolo: certo };
-
-  const nc = compatta(nome);
-  const cc = compatta(cognome);
-  const iniziale = (s) => s.length === 1;
-  const candidati = stessi.filter((x) => {
-    const xc = normPersona(x.cognome);
-    const xnc = compatta(x.nome);
-    if (xc === c) {
-      if (xnc === nc) return true; // "Gian Luca" ~ "Gianluca"
-      if (
-        (iniziale(nc) && xnc.startsWith(nc)) ||
-        (iniziale(xnc) && nc.startsWith(xnc))
-      )
-        return true; // "G." ~ "Gianluca"
-    }
-    // refuso di un solo carattere sul nominativo completo
-    return distanzaMax1(xnc + compatta(x.cognome), nc + cc);
-  });
-  if (candidati.length) return { tipo: "sospetto", candidati };
-  return { tipo: "nuovo" };
-}
+const personTokens = (...parts) =>
+  parts
+    .map(personNorm)
+    .join(" ")
+    .split(" ")
+    .filter(Boolean)
+    .sort()
+    .join("|");
 
 // ---------------- LETTURA ----------------
 
@@ -302,19 +246,7 @@ export async function dbSaveMuta({ manicchiaId, tipoCero, anno, pezzo, muta, rig
 
 // IMPORT: garantisce pezzi/mute, crea i ceraioli mancanti e inserisce le partecipazioni.
 // "data" è lo stato attuale dell'app (per riconoscere ciò che già esiste).
-// Importa le righe già RISOLTE dall'anteprima. Ogni riga porta una "azione":
-//  { tipo: "esistente", ceraioloId }  -> usa il ceraiolo esistente
-//  { tipo: "nuovo" }                  -> crea il ceraiolo (una sola volta)
-//  { tipo: "salta" } o assente        -> la riga viene ignorata
-// I ceraioli esistenti non vengono MAI modificati.
 export async function dbImportRows(rows, data) {
-  const totali = rows.length;
-  rows = rows.filter(
-    (r) =>
-      r.azione && (r.azione.tipo === "esistente" || r.azione.tipo === "nuovo")
-  );
-  const saltate = totali - rows.length;
-
   // 1) Garantisci pezzi e mute
   const pezziByKey = new Map();
   data.pezzi.forEach((p) =>
@@ -357,16 +289,92 @@ export async function dbImportRows(rows, data) {
     await dbUpsertPezzo(pezzo);
   }
 
-  // 2) Crea SOLO i ceraioli decisi in anteprima (azione "nuovo"),
-  //    senza mai modificare quelli esistenti. La chiave NON usa il soprannome:
-  //    stesso nome+cognome (normalizzati) nella stessa manicchia = stessa persona.
-  const chiaveNuovo = (manicchiaId, nome, cognome) =>
-    `${manicchiaId}|${normPersona(nome)}|${normPersona(cognome)}`;
+  // 2) Risolvi/crea i ceraioli mancanti.
+  // L'import deve essere tollerante: "MARIO ROSSI", "Mario Rossi", "Rossi Mario"
+  // e piccole differenze di spazi/apostrofi devono riconoscere lo stesso ceraiolo.
+  const ceraioloKey = (manicchiaId, nome, cognome, soprannome) =>
+    `${manicchiaId}|${personNorm(nome)}|${personNorm(cognome)}|${personNorm(soprannome)}`;
+
+  const ceraioliByExact = new Map();
+  const ceraioliByNoNick = new Map();
+  const ceraioliBySwapped = new Map();
+  const ceraioliByTokenBag = new Map();
+
+  function addToMultiMap(map, key, id) {
+    if (!key) return;
+    const list = map.get(key) || [];
+    if (!list.includes(id)) list.push(id);
+    map.set(key, list);
+  }
+
+  data.ceraioli.forEach((c) => {
+    const id = Number(c.id);
+    ceraioliByExact.set(
+      ceraioloKey(c.manicchiaId, c.nome, c.cognome, c.soprannome),
+      id
+    );
+
+    addToMultiMap(
+      ceraioliByNoNick,
+      `${c.manicchiaId}|${personNorm(c.nome)}|${personNorm(c.cognome)}`,
+      id
+    );
+    addToMultiMap(
+      ceraioliBySwapped,
+      `${c.manicchiaId}|${personNorm(c.cognome)}|${personNorm(c.nome)}`,
+      id
+    );
+    addToMultiMap(
+      ceraioliByTokenBag,
+      `${c.manicchiaId}|${personTokens(c.nome, c.cognome)}`,
+      id
+    );
+  });
+
+  function uniqueIdFrom(map, key) {
+    const list = map.get(key) || [];
+    return list.length === 1 ? list[0] : null;
+  }
+
+  function resolveCeraioloId(r) {
+    if (r.ceraioloId) return Number(r.ceraioloId);
+
+    const exact = ceraioliByExact.get(
+      ceraioloKey(r.manicchiaId, r.nome, r.cognome, r.soprannome)
+    );
+    if (exact) return Number(exact);
+
+    // stesso nome+cognome, ignorando soprannome
+    const noNick = uniqueIdFrom(
+      ceraioliByNoNick,
+      `${r.manicchiaId}|${personNorm(r.nome)}|${personNorm(r.cognome)}`
+    );
+    if (noNick) return Number(noNick);
+
+    // nome e cognome invertiti nel file Excel/CSV
+    const swapped = uniqueIdFrom(
+      ceraioliBySwapped,
+      `${r.manicchiaId}|${personNorm(r.nome)}|${personNorm(r.cognome)}`
+    );
+    if (swapped) return Number(swapped);
+
+    // confronto per parole: utile per casi come doppi nomi/spazi differenti
+    const token = uniqueIdFrom(
+      ceraioliByTokenBag,
+      `${r.manicchiaId}|${personTokens(r.nome, r.cognome)}`
+    );
+    if (token) return Number(token);
+
+    return null;
+  }
 
   const daCreare = new Map();
   rows.forEach((r) => {
-    if (r.azione?.tipo !== "nuovo") return;
-    const k = chiaveNuovo(r.manicchiaId, r.nome, r.cognome);
+    if (resolveCeraioloId(r)) return;
+
+    // Se nel file nome/cognome sono invertiti ma non esiste una corrispondenza,
+    // qui vengono comunque creati nel formato indicato dal file.
+    const k = ceraioloKey(r.manicchiaId, r.nome, r.cognome, r.soprannome);
     if (!daCreare.has(k)) {
       daCreare.set(k, {
         manicchia_id: r.manicchiaId,
@@ -377,7 +385,6 @@ export async function dbImportRows(rows, data) {
     }
   });
 
-  const nuoviId = new Map();
   let creati = 0;
   if (daCreare.size) {
     const { data: inseriti, error } = await supabase
@@ -386,9 +393,28 @@ export async function dbImportRows(rows, data) {
       .select();
     if (error) throw error;
     creati = inseriti.length;
-    inseriti.forEach((c) =>
-      nuoviId.set(chiaveNuovo(c.manicchia_id, c.nome, c.cognome), Number(c.id))
-    );
+    inseriti.forEach((c) => {
+      const id = Number(c.id);
+      ceraioliByExact.set(
+        ceraioloKey(c.manicchia_id, c.nome, c.cognome, c.soprannome),
+        id
+      );
+      addToMultiMap(
+        ceraioliByNoNick,
+        `${c.manicchia_id}|${personNorm(c.nome)}|${personNorm(c.cognome)}`,
+        id
+      );
+      addToMultiMap(
+        ceraioliBySwapped,
+        `${c.manicchia_id}|${personNorm(c.cognome)}|${personNorm(c.nome)}`,
+        id
+      );
+      addToMultiMap(
+        ceraioliByTokenBag,
+        `${c.manicchia_id}|${personTokens(c.nome, c.cognome)}`,
+        id
+      );
+    });
   }
 
   // 3) Inserisci le partecipazioni (saltando i duplicati già presenti)
@@ -401,10 +427,7 @@ export async function dbImportRows(rows, data) {
 
   const daInserire = [];
   rows.forEach((r) => {
-    const ceraioloId =
-      r.azione?.tipo === "esistente"
-        ? Number(r.azione.ceraioloId)
-        : nuoviId.get(chiaveNuovo(r.manicchiaId, r.nome, r.cognome));
+    const ceraioloId = resolveCeraioloId(r);
     if (!ceraioloId) return;
 
     // Usa la grafia UFFICIALE del pezzo e della muta (non quella del file).
@@ -432,7 +455,7 @@ export async function dbImportRows(rows, data) {
 
   await dbInsertPartecipazioni(daInserire);
 
-  return { importate: daInserire.length, ceraioliCreati: creati, saltate };
+  return { importate: daInserire.length, ceraioliCreati: creati };
 }
 
 // --- GESTIONE ADMIN (tramite Edge Function sicura "admin-management") ---

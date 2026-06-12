@@ -2835,7 +2835,8 @@ function AdminImportPage({
       const idx = (name) => headerCells.indexOf(normalizeText(name));
 
       const iAnno = idx("anno");
-      const iTipo = idx("tipocero");
+      let iTipo = idx("tipocero");
+      if (iTipo < 0) iTipo = idx("cero");
       const iPezzo = idx("pezzo");
       const iMuta = idx("muta");
       const iPos = idx("posizione");
@@ -2867,7 +2868,7 @@ function AdminImportPage({
         const at = (i) => (i >= 0 ? (cells[i] || "").trim() : "");
 
         const tipoCella = normalizeText(at(iTipo));
-        const tipo = tipoCella === "mezzano" ? "mezzano" : "grande";
+        const tipo = tipoCella.includes("mezzano") ? "mezzano" : "grande";
         const man = resolveManicchia(at(iMan));
 
         const row = {
@@ -2985,6 +2986,8 @@ function AdminImportPage({
       return;
     }
 
+    let dataForImport = data;
+
     if (forceOverwrite) {
       const conferma = window.confirm(
         duplicates.length > 1
@@ -2992,18 +2995,56 @@ function AdminImportPage({
           : "Confermi la sovrascrittura della muta esistente? Questa operazione non può essere annullata."
       );
       if (!conferma) return;
+
+      // IMPORTANTE:
+      // la sovrascrittura deve eliminare prima le righe della/e muta/e già presenti.
+      // Inoltre dbImportRows usa lo stato "data" per evitare duplicati: se gli passiamo
+      // lo stato vecchio, può continuare a vedere quelle righe come già esistenti e importare 0 righe.
+      for (const item of duplicates) {
+        await dbDeleteMutaRows(
+          item.manicchiaId,
+          item.tipoCero,
+          item.anno,
+          item.pezzo,
+          item.muta
+        );
+      }
+
+      dataForImport = {
+        ...data,
+        partecipazioni: data.partecipazioni.filter(
+          (p) =>
+            !duplicates.some(
+              (item) =>
+                p.manicchiaId === item.manicchiaId &&
+                tipoOf(p) === item.tipoCero &&
+                Number(p.anno) === Number(item.anno) &&
+                normalizeText(p.pezzo) === normalizeText(item.pezzo) &&
+                normalizeText(p.muta) === normalizeText(item.muta)
+            )
+        ),
+      };
     }
 
     try {
-      const res = await dbImportRows(rows, data);
+      const res = await dbImportRows(rows, dataForImport);
       await reloadData();
-      showToast?.(
-        "success",
-        `Import completato. Righe importate: ${res.importate}` +
-          (res.ceraioliCreati
-            ? ` · nuovi ceraioli: ${res.ceraioliCreati}.`
-            : ".")
-      );
+
+      if (res.importate === 0 && rows.length > 0) {
+        showToast?.(
+          "error",
+          "Nessuna riga importata: le righe risultano già presenti oppure i ceraioli non sono stati riconosciuti."
+        );
+      } else {
+        showToast?.(
+          "success",
+          `Import completato. Righe importate: ${res.importate}` +
+            (res.ceraioliCreati
+              ? ` · nuovi ceraioli: ${res.ceraioliCreati}.`
+              : ".")
+        );
+      }
+
       setDuplicateImportPrompt(null);
       setPreview([]);
     } catch (e) {
