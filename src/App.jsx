@@ -60,6 +60,10 @@ const POSIZIONI_EXTRA = [
   "Capo 5",
 ];
 
+// Anni in cui la Festa dei Ceri non si è svolta (emergenza Covid):
+// non vanno mai conteggiati come assenza/infortunio personale.
+const ANNI_FESTA_NON_SVOLTA = [2020, 2021];
+
 const MANICCHIA_BASE = {
   id: "torre-calzolari",
   nome: "Torre dei Calzolari",
@@ -621,6 +625,16 @@ function getCeraioloHistoryWithInfortuni(data, ceraioloId, tipoCero = null) {
 
     if (yearRows.length > 0) {
       result.push(...yearRows);
+    } else if (ANNI_FESTA_NON_SVOLTA.includes(year)) {
+      result.push({
+        id: `non-svolta-${ceraioloId}-${year}`,
+        anno: year,
+        pezzo: "Festa sospesa per COVID",
+        muta: "—",
+        posizione: "SOSPESA",
+        ceraioloId,
+        isNonSvolta: true,
+      });
     } else {
       result.push({
         id: `infortunato-${ceraioloId}-${year}`,
@@ -1276,7 +1290,18 @@ function SchedaCeraioloPage({ data, setPage, ceraiolo }) {
         <div className="panel history-panel">
           {history.map((row) => (
             <div className="history-row" key={row.id}>
-              {row.isInfortunato ? (
+              {row.isNonSvolta ? (
+                <>
+                  <span>
+                    <b>{row.anno}</b> · FESTA SOSPESA PER COVID
+                  </span>
+                  <span>
+                    Sospensione generale
+                    <br />
+                    non conta come assenza
+                  </span>
+                </>
+              ) : row.isInfortunato ? (
                 <>
                   <span>
                     <b>{row.anno}</b> · INFORTUNATO
@@ -1489,6 +1514,176 @@ function CeraioloSearchSelect({
 
 
 
+// ---------- Esportazione mute (PDF di stampa + CSV) ----------
+
+function raccogliMuteExport(data, manicchiaId, tipoCero, anno) {
+  const rows = data.partecipazioni.filter(
+    (p) =>
+      p.manicchiaId === manicchiaId &&
+      tipoOf(p) === tipoCero &&
+      Number(p.anno) === Number(anno)
+  );
+  const byId = new Map(data.ceraioli.map((c) => [Number(c.id), c]));
+  const nomeDi = (id) => {
+    const c = byId.get(Number(id));
+    if (!c) return "—";
+    const sopr = c.soprannome ? ` (${c.soprannome})` : "";
+    return `${c.nome || ""} ${c.cognome || ""}${sopr}`.trim() || "—";
+  };
+
+  const map = new Map();
+  rows.forEach((p) => {
+    const k = `${p.pezzo}|${p.muta}`;
+    if (!map.has(k)) map.set(k, { pezzo: p.pezzo, muta: p.muta, pos: new Map() });
+    if (p.posizione) {
+      map.get(k).pos.set(p.posizione, p.ceraioloId ? nomeDi(p.ceraioloId) : "—");
+    }
+  });
+
+  return Array.from(map.values()).sort((a, b) => {
+    const oa = PEZZO_ORDER.indexOf(a.pezzo);
+    const ob = PEZZO_ORDER.indexOf(b.pezzo);
+    const A = oa === -1 ? 999 : oa;
+    const B = ob === -1 ? 999 : ob;
+    if (A !== B) return A - B;
+    return a.muta.localeCompare(b.muta, "it");
+  });
+}
+
+function esportaMutePdf(data, manicchiaId, tipoCero, anno) {
+  const list = raccogliMuteExport(data, manicchiaId, tipoCero, anno);
+  if (!list.length) return "vuoto";
+
+  const manicchiaNome = getManicchiaName(data, manicchiaId);
+  const esc = (s) =>
+    String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const cella = (label, val, extra) =>
+    `<div class="r${extra ? " x" : ""}"><span>${esc(label)}</span><b>${esc(
+      val || "—"
+    )}</b></div>`;
+
+  const blocchi = list
+    .map((m) => {
+      let base = "";
+      for (let i = 0; i < 4; i++) {
+        base += cella(POSIZIONI_BASE[i], m.pos.get(POSIZIONI_BASE[i]));
+        base += cella(POSIZIONI_BASE[i + 4], m.pos.get(POSIZIONI_BASE[i + 4]));
+      }
+      const extras = POSIZIONI_EXTRA.filter((p) => m.pos.has(p))
+        .map((p) => cella(p, m.pos.get(p), true))
+        .join("");
+      return `<div class="muta">
+<div class="band"><span>Pezzo: ${esc(m.pezzo)}</span><span>Muta: ${esc(m.muta)}</span></div>
+<div class="grid">${base}</div>
+${extras ? `<div class="grid">${extras}</div>` : ""}
+</div>`;
+    })
+    .join("");
+
+  const stampa = "<scr" + "ipt>window.onload=function(){setTimeout(function(){window.print()},350)}</scr" + "ipt>";
+  const html = `<!DOCTYPE html><html lang="it"><head><meta charset="utf-8">
+<title>Mute ${esc(anno)} · ${esc(TIPO_CERO_LABEL[tipoCero] || "")} · ${esc(manicchiaNome)}</title>
+<style>
+@page{size:A4;margin:14mm}
+*{box-sizing:border-box}
+body{font-family:-apple-system,'Helvetica Neue',Arial,sans-serif;color:#2b2620;margin:0;
+-webkit-print-color-adjust:exact;print-color-adjust:exact}
+.head{text-align:center;border-bottom:2px solid #980000;padding-bottom:10px;margin-bottom:13px}
+.head .k{font-size:11px;letter-spacing:.12em;color:#8a7f72;margin:0}
+.head h1{font-size:19px;color:#980000;margin:2px 0 0;font-weight:700}
+.head p{margin:4px 0 0;font-size:13px;color:#5f574d}
+.head .man{font-weight:700}
+.muta{break-inside:avoid;margin-bottom:13px}
+.band{background:#980000;color:#f6e9d8;font-size:12.5px;font-weight:700;padding:4px 10px;border-radius:3px;display:flex;justify-content:space-between}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:0 18px;padding:7px 4px 0;font-size:12px}
+.r{display:flex;justify-content:space-between;padding:3px 0;border-bottom:.5px solid #d9cfc0}
+.r span{color:#8a7f72}.r b{font-weight:700}
+.r.x{border-bottom:0}.r.x span{color:#b3211e;font-weight:700}
+.foot{position:fixed;bottom:0;left:0;right:0;text-align:center;font-size:10px;color:#8a7f72}
+</style></head><body>
+<div class="head">
+<p class="k">ARCHIVIO STORICO</p>
+<h1>Cero di Sant'Antonio</h1>
+<p>Le mute dell'anno <b>${esc(anno)}</b> · ${esc(TIPO_CERO_LABEL[tipoCero] || "")}</p>
+<p class="man">Manicchia di ${esc(manicchiaNome)}</p>
+</div>
+${blocchi}
+<div class="foot">Generato dall'Archivio Storico del Cero di Sant'Antonio</div>
+${stampa}
+</body></html>`;
+
+  const w = window.open("", "_blank");
+  if (!w) return "popup";
+  w.document.write(html);
+  w.document.close();
+  return "ok";
+}
+
+function esportaMuteCsv(data, manicchiaId, tipoCero, anno) {
+  const ordinePos = [...POSIZIONI_BASE, ...POSIZIONI_EXTRA];
+  const byId = new Map(data.ceraioli.map((c) => [Number(c.id), c]));
+  const manicchiaNome = getManicchiaName(data, manicchiaId);
+
+  const rows = data.partecipazioni
+    .filter(
+      (p) =>
+        p.manicchiaId === manicchiaId &&
+        tipoOf(p) === tipoCero &&
+        Number(p.anno) === Number(anno) &&
+        p.ceraioloId
+    )
+    .sort((a, b) => {
+      const oa = PEZZO_ORDER.indexOf(a.pezzo);
+      const ob = PEZZO_ORDER.indexOf(b.pezzo);
+      const A = oa === -1 ? 999 : oa;
+      const B = ob === -1 ? 999 : ob;
+      if (A !== B) return A - B;
+      const bm = a.muta.localeCompare(b.muta, "it");
+      if (bm !== 0) return bm;
+      return ordinePos.indexOf(a.posizione) - ordinePos.indexOf(b.posizione);
+    });
+
+  if (!rows.length) return "vuoto";
+
+  const q = (v) => {
+    const s = String(v ?? "");
+    return /[;"\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  const lines = ["anno;cero;manicchia;pezzo;muta;posizione;nome;cognome;soprannome"];
+  rows.forEach((p) => {
+    const c = byId.get(Number(p.ceraioloId)) || {};
+    lines.push(
+      [
+        p.anno,
+        TIPO_CERO_LABEL[tipoCero] || tipoCero,
+        manicchiaNome,
+        p.pezzo,
+        p.muta,
+        p.posizione,
+        c.nome || "",
+        c.cognome || "",
+        c.soprannome || "",
+      ]
+        .map(q)
+        .join(";")
+    );
+  });
+
+  const slug = manicchiaNome.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+  const blob = new Blob(["\ufeff" + lines.join("\r\n")], {
+    type: "text/csv;charset=utf-8",
+  });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `mute-${anno}-${tipoCero}-${slug}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+  return "ok";
+}
+
 function AdminMuteHubPage({
   data,
   setData,
@@ -1507,6 +1702,40 @@ function AdminMuteHubPage({
     isSuper ? null : userManicchiaId,
     tipoCero
   );
+
+  // --- esportazione PDF/CSV ---
+  const [expManicchia, setExpManicchia] = useState(userManicchiaId || "");
+  const [expAnno, setExpAnno] = useState("");
+  // super admin: può scegliere qualsiasi manicchia; admin normale: solo la propria
+  const expScope = isSuper
+    ? expManicchia || data.manicchie[0]?.id || ""
+    : userManicchiaId;
+  const anniExport = [
+    ...new Set(
+      data.partecipazioni
+        .filter((p) => p.manicchiaId === expScope && tipoOf(p) === tipoCero)
+        .map((p) => Number(p.anno))
+    ),
+  ].sort((a, b) => b - a);
+  const annoSel = anniExport.includes(Number(expAnno))
+    ? Number(expAnno)
+    : anniExport[0] || "";
+
+  function handleEsporta(formato) {
+    if (!annoSel) {
+      showToast?.("error", "Nessuna muta da esportare per questa selezione.");
+      return;
+    }
+    const fn = formato === "pdf" ? esportaMutePdf : esportaMuteCsv;
+    const esito = fn(data, expScope, tipoCero, annoSel);
+    if (esito === "vuoto") {
+      showToast?.("error", "Nessuna muta da esportare per questa selezione.");
+    } else if (esito === "popup") {
+      showToast?.("error", "Consenti i popup per aprire la stampa del PDF.");
+    } else if (formato === "csv") {
+      showToast?.("success", "CSV scaricato.");
+    }
+  }
 
   async function eliminaMuta(item) {
     try {
@@ -1575,6 +1804,65 @@ function AdminMuteHubPage({
           ))}
         </div>
       )}
+      <h3 className="section-subtitle">
+        Esporta · {TIPO_CERO_LABEL[tipoCero]}
+      </h3>
+
+      <div className="panel">
+        {isSuper && (
+          <label>
+            Manicchia
+            <select
+              value={expScope}
+              onChange={(e) => setExpManicchia(e.target.value)}
+            >
+              {data.manicchie.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.nome}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+
+        <label>
+          Anno
+          <select
+            value={annoSel}
+            onChange={(e) => setExpAnno(e.target.value)}
+            disabled={!anniExport.length}
+          >
+            {anniExport.length === 0 ? (
+              <option value="">Nessun anno disponibile</option>
+            ) : (
+              anniExport.map((a) => (
+                <option key={a} value={a}>
+                  {a}
+                </option>
+              ))
+            )}
+          </select>
+        </label>
+
+        <div style={{ display: "flex", gap: 10, marginTop: 10 }}>
+          <button
+            type="button"
+            className="primary-button"
+            style={{ flex: 1, marginTop: 0 }}
+            onClick={() => handleEsporta("pdf")}
+          >
+            Scarica PDF
+          </button>
+          <button
+            type="button"
+            className="primary-button"
+            style={{ flex: 1, marginTop: 0 }}
+            onClick={() => handleEsporta("csv")}
+          >
+            Esporta CSV
+          </button>
+        </div>
+      </div>
     </section>
   );
 }
