@@ -1924,6 +1924,7 @@ function AdminMutaPage({
   activeManicchiaId,
   showToast,
   editTarget = null,
+  openMutaEditor,
 }) {
   const userManicchiaId = getUserManicchiaId(currentUser, activeManicchiaId);
   const isSuper = currentUser?.ruolo === "super_admin";
@@ -1994,6 +1995,7 @@ function AdminMutaPage({
     initialEdit?.extra ??
       Object.fromEntries(POSIZIONI_EXTRA.map((p) => [p, false]))
   );
+  const [duplicatePrompt, setDuplicatePrompt] = useState(null);
 
   function getAvailableCeraioli(posizioneCorrente) {
     const alreadySelected = Object.entries(scelte)
@@ -2024,23 +2026,13 @@ function AdminMutaPage({
     setExtraAttive(Object.fromEntries(POSIZIONI_EXTRA.map((p) => [p, false])));
   }
 
-  async function salva() {
-    if (!pezzo || !muta) {
-      showToast?.("error", "Seleziona prima pezzo e muta.");
-      return;
-    }
-
+  function buildRigheDaSalvare() {
     const posizioniDaSalvare = [
       ...POSIZIONI_BASE,
       ...POSIZIONI_EXTRA.filter((p) => extraAttive[p]),
     ];
 
-    if (!posizioniDaSalvare.some((posizione) => scelte[posizione])) {
-      showToast?.("error", "Inserisci almeno un ceraiolo nella muta.");
-      return;
-    }
-
-    const righe = posizioniDaSalvare
+    return posizioniDaSalvare
       .filter((posizione) => scelte[posizione])
       .map((posizione) => ({
         manicchiaId,
@@ -2051,6 +2043,70 @@ function AdminMutaPage({
         posizione,
         ceraioloId: Number(scelte[posizione]),
       }));
+  }
+
+  function findExistingMuta() {
+    if (!pezzo || !muta) return null;
+
+    const exists = data.partecipazioni.some(
+      (r) =>
+        r.manicchiaId === manicchiaId &&
+        tipoOf(r) === tipoCero &&
+        Number(r.anno) === Number(anno) &&
+        normalizeText(r.pezzo) === normalizeText(pezzo.nome) &&
+        normalizeText(r.muta) === normalizeText(muta)
+    );
+
+    if (!exists) return null;
+
+    return {
+      manicchiaId,
+      manicchiaNome: getManicchiaName(data, manicchiaId),
+      tipoCero,
+      anno: Number(anno),
+      pezzo: pezzo.nome,
+      pezzoId: pezzo.id,
+      muta,
+      key: `${anno}__${tipoCero}__${manicchiaId}__${pezzo.nome}__${muta}`,
+    };
+  }
+
+  function isSameAsOriginal() {
+    return (
+      isEdit &&
+      Number(editTarget.anno) === Number(anno) &&
+      normalizeText(editTarget.pezzo) === normalizeText(pezzo?.nome) &&
+      normalizeText(editTarget.muta) === normalizeText(muta) &&
+      (editTarget.manicchiaId || manicchiaId) === manicchiaId &&
+      (editTarget.tipoCero || tipoCero) === tipoCero
+    );
+  }
+
+  async function salva({ forceOverwrite = false } = {}) {
+    if (!pezzo || !muta) {
+      showToast?.("error", "Seleziona prima pezzo e muta.");
+      return;
+    }
+
+    const righe = buildRigheDaSalvare();
+
+    if (!righe.length) {
+      showToast?.("error", "Inserisci almeno un ceraiolo nella muta.");
+      return;
+    }
+
+    const existingMuta = findExistingMuta();
+    if (existingMuta && !isSameAsOriginal() && !forceOverwrite) {
+      setDuplicatePrompt(existingMuta);
+      return;
+    }
+
+    if (forceOverwrite) {
+      const conferma = window.confirm(
+        "Confermi la sovrascrittura della muta esistente? Questa operazione non può essere annullata."
+      );
+      if (!conferma) return;
+    }
 
     try {
       await dbSaveMuta({
@@ -2069,11 +2125,14 @@ function AdminMutaPage({
           : null,
       });
       await reloadData();
+      setDuplicatePrompt(null);
       showToast?.(
         "success",
         isEdit
           ? "Muta modificata correttamente."
-          : "Muta salvata correttamente."
+          : forceOverwrite
+            ? "Muta sovrascritta correttamente."
+            : "Muta salvata correttamente."
       );
       setPage("admin-mute");
     } catch (e) {
@@ -2156,6 +2215,45 @@ function AdminMutaPage({
         </label>
       </div>
 
+      {duplicatePrompt && (
+        <div className="panel" style={{ borderColor: "rgba(152, 0, 0, 0.28)" }}>
+          <h3 style={{ marginTop: 0, color: "#980000" }}>Muta già presente</h3>
+          <p style={{ marginBottom: 12 }}>
+            Esiste già la muta <strong>{duplicatePrompt.muta}</strong> del {duplicatePrompt.anno} per {duplicatePrompt.manicchiaNome}.
+          </p>
+          <p style={{ marginTop: 0 }}>
+            Scegli come procedere prima di salvare.
+          </p>
+          <div style={{ display: "grid", gap: 10 }}>
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={() => setDuplicatePrompt(null)}
+            >
+              Annulla
+            </button>
+            <button
+              type="button"
+              className="primary-button"
+              style={{ marginTop: 0 }}
+              onClick={() => {
+                setDuplicatePrompt(null);
+                if (openMutaEditor) openMutaEditor(duplicatePrompt);
+              }}
+            >
+              Modifica muta esistente
+            </button>
+            <button
+              type="button"
+              className="danger-button"
+              onClick={() => salva({ forceOverwrite: true })}
+            >
+              Sovrascrivi
+            </button>
+          </div>
+        </div>
+      )}
+
       {POSIZIONI_BASE.map((pos) => (
         <div key={pos} className="panel">
           <label>{pos}</label>
@@ -2203,7 +2301,7 @@ function AdminMutaPage({
         </div>
       ))}
 
-      <button type="button" className="primary-button" onClick={salva}>
+      <button type="button" className="primary-button" onClick={() => salva()}>
         {isEdit ? "Salva modifiche" : "Aggiungi"}
       </button>
     </section>
@@ -2641,6 +2739,7 @@ function AdminImportPage({
   currentUser,
   activeManicchiaId,
   showToast,
+  openMutaEditor,
 }) {
   const manicchiaId = getUserManicchiaId(currentUser, activeManicchiaId);
   const manicchia = data.manicchie.find((m) => m.id === manicchiaId);
@@ -2650,6 +2749,7 @@ function AdminImportPage({
   const [tipoCero, setTipoCero] = useState("grande");
   const [preview, setPreview] = useState([]);
   const [errors, setErrors] = useState([]);
+  const [duplicateImportPrompt, setDuplicateImportPrompt] = useState(null);
 
   const IMPORT_HEADER = [
     "anno",
@@ -2716,6 +2816,7 @@ function AdminImportPage({
     const reader = new FileReader();
 
     reader.onload = () => {
+      setDuplicateImportPrompt(null);
       const text = String(reader.result || "");
       const lines = text.split(/\r?\n/).filter((l) => l.trim().length);
 
@@ -2820,7 +2921,54 @@ function AdminImportPage({
     reader.readAsText(file);
   }
 
-  async function confermaImport() {
+  function getDuplicateMutasFromRows(rows) {
+    const groups = new Map();
+
+    rows.forEach((row) => {
+      const idManicchia = row.manicchiaId || manicchiaId;
+      const tipo = row.tipoCero || tipoCero;
+      const key = [
+        idManicchia,
+        tipo,
+        Number(row.anno),
+        normalizeText(row.pezzo),
+        normalizeText(row.muta),
+      ].join("__");
+
+      if (!groups.has(key)) {
+        const pezzoObj = data.pezzi.find(
+          (p) =>
+            p.manicchiaId === idManicchia &&
+            tipoOf(p) === tipo &&
+            normalizeText(p.nome) === normalizeText(row.pezzo)
+        );
+
+        groups.set(key, {
+          key,
+          manicchiaId: idManicchia,
+          manicchiaNome: getManicchiaName(data, idManicchia),
+          tipoCero: tipo,
+          anno: Number(row.anno),
+          pezzo: pezzoObj?.nome || row.pezzo,
+          pezzoId: pezzoObj?.id || "",
+          muta: row.muta,
+        });
+      }
+    });
+
+    return Array.from(groups.values()).filter((item) =>
+      data.partecipazioni.some(
+        (p) =>
+          p.manicchiaId === item.manicchiaId &&
+          tipoOf(p) === item.tipoCero &&
+          Number(p.anno) === Number(item.anno) &&
+          normalizeText(p.pezzo) === normalizeText(item.pezzo) &&
+          normalizeText(p.muta) === normalizeText(item.muta)
+      )
+    );
+  }
+
+  async function confermaImport({ forceOverwrite = false } = {}) {
     if (preview.length === 0) {
       showToast?.("error", "Nessun dato da importare.");
       return;
@@ -2830,6 +2978,21 @@ function AdminImportPage({
       ...row,
       manicchiaId: row.manicchiaId || manicchiaId,
     }));
+
+    const duplicates = getDuplicateMutasFromRows(rows);
+    if (duplicates.length > 0 && !forceOverwrite) {
+      setDuplicateImportPrompt(duplicates);
+      return;
+    }
+
+    if (forceOverwrite) {
+      const conferma = window.confirm(
+        duplicates.length > 1
+          ? `Confermi la sovrascrittura di ${duplicates.length} mute esistenti? Questa operazione non può essere annullata.`
+          : "Confermi la sovrascrittura della muta esistente? Questa operazione non può essere annullata."
+      );
+      if (!conferma) return;
+    }
 
     try {
       const res = await dbImportRows(rows, data);
@@ -2841,6 +3004,7 @@ function AdminImportPage({
             ? ` · nuovi ceraioli: ${res.ceraioliCreati}.`
             : ".")
       );
+      setDuplicateImportPrompt(null);
       setPreview([]);
     } catch (e) {
       showToast?.("error", e?.message || "Errore durante l'import.");
@@ -2880,6 +3044,64 @@ function AdminImportPage({
           {errors.map((e) => (
             <p key={e}>{e}</p>
           ))}
+        </div>
+      )}
+
+      {duplicateImportPrompt && (
+        <div className="panel" style={{ borderColor: "rgba(152, 0, 0, 0.28)" }}>
+          <h3 style={{ marginTop: 0, color: "#980000" }}>
+            Muta già presente
+          </h3>
+          <p style={{ marginBottom: 12 }}>
+            Il file contiene {duplicateImportPrompt.length === 1 ? "una muta già caricata" : `${duplicateImportPrompt.length} mute già caricate`}.
+            Se procedi, i dati esistenti verranno sostituiti.
+          </p>
+
+          {duplicateImportPrompt.slice(0, 5).map((item) => (
+            <div className="history-row" key={item.key}>
+              <span>
+                {item.anno} · {TIPO_CERO_LABEL[item.tipoCero]} · {item.pezzo}
+              </span>
+              <span>
+                {item.manicchiaNome}
+                <br />
+                {item.muta}
+              </span>
+            </div>
+          ))}
+
+          {duplicateImportPrompt.length > 5 && (
+            <p>Altre {duplicateImportPrompt.length - 5} mute già presenti.</p>
+          )}
+
+          <div style={{ display: "grid", gap: 10, marginTop: 12 }}>
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={() => setDuplicateImportPrompt(null)}
+            >
+              Annulla
+            </button>
+            <button
+              type="button"
+              className="primary-button"
+              style={{ marginTop: 0 }}
+              onClick={() => {
+                const first = duplicateImportPrompt[0];
+                setDuplicateImportPrompt(null);
+                if (openMutaEditor && first) openMutaEditor(first);
+              }}
+            >
+              Modifica muta esistente
+            </button>
+            <button
+              type="button"
+              className="danger-button"
+              onClick={() => confermaImport({ forceOverwrite: true })}
+            >
+              Sovrascrivi
+            </button>
+          </div>
         </div>
       )}
 
@@ -3357,6 +3579,10 @@ export default function App() {
           activeManicchiaId={activeManicchiaId}
           showToast={showToast}
           editTarget={muteEditTarget}
+          openMutaEditor={(item) => {
+            setMuteEditTarget(item);
+            setPage("admin-muta");
+          }}
         />
       );
     }
@@ -3396,6 +3622,10 @@ export default function App() {
           currentUser={currentUser}
           activeManicchiaId={activeManicchiaId}
           showToast={showToast}
+          openMutaEditor={(item) => {
+            setMuteEditTarget(item);
+            setPage("admin-muta");
+          }}
         />
       );
     }
