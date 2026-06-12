@@ -508,6 +508,12 @@ function getYearsByTipo(data, tipoCero) {
   return anni.length ? anni : [new Date().getFullYear()];
 }
 
+function getDefaultArchiveYear(data, tipoCero) {
+  const currentYear = new Date().getFullYear();
+  const anni = getYearsByTipo(data, tipoCero);
+  return anni.includes(currentYear) ? currentYear : anni[0] || currentYear;
+}
+
 const PEZZO_ORDER = ["Alzatella", "Bargello", "Buchetto", "Monte"];
 
 // Tutte le mute caricate in un anno, su TUTTE le manicchie, per un tipo di cero.
@@ -872,7 +878,7 @@ function Home({ data, setPage }) {
       <div className="stats-card">
         <StatBox
           icon={assets.barella}
-          value={getMuteCaricate(data, "torre-calzolari", "grande").length}
+          value={getMuteCaricate(data, null, null).length}
           label="Mute"
         />
         <span className="stat-separator" />
@@ -901,7 +907,7 @@ function Home({ data, setPage }) {
 }
 
 // Dati modificabili per le pagine Privacy/Info
-const EMAIL_CONTATTO = "info@ceridigubbio.it"; //
+const EMAIL_CONTATTO = "info@ceridigubbio.it";
 
 function PrivacyPage({ setPage }) {
   return (
@@ -1002,17 +1008,33 @@ function StatBox({ icon, value, label }) {
 }
 
 function ArchivePage({ data, setPage, selection, setSelection }) {
+  const [manicchiaFilter, setManicchiaFilter] = useState("all");
+  const [searchText, setSearchText] = useState("");
+
   const tipoCero = selection.tipoCero || "grande";
   const years = getYearsByTipo(data, tipoCero);
-  const anno = years.includes(Number(selection.anno)) ? Number(selection.anno) : years[0];
-  const mute = getMuteByYearAllManicchie(data, anno, tipoCero);
+  const anno = years.includes(Number(selection.anno))
+    ? Number(selection.anno)
+    : getDefaultArchiveYear(data, tipoCero);
+
+  const normalizedSearch = normalizeText(searchText);
+  const mute = getMuteByYearAllManicchie(data, anno, tipoCero).filter((item) => {
+    const matchesManicchia =
+      manicchiaFilter === "all" || item.manicchiaId === manicchiaFilter;
+    const matchesSearch =
+      !normalizedSearch ||
+      normalizeText(`${item.pezzo} ${item.muta} ${item.manicchiaNome}`).includes(
+        normalizedSearch
+      );
+    return matchesManicchia && matchesSearch;
+  });
 
   function changeTipo(nuovoTipo) {
-    const ys = getYearsByTipo(data, nuovoTipo);
+    const defaultYear = getDefaultArchiveYear(data, nuovoTipo);
     setSelection((prev) => ({
       ...prev,
       tipoCero: nuovoTipo,
-      anno: ys[0] ?? prev.anno,
+      anno: defaultYear,
     }));
   }
 
@@ -1022,7 +1044,7 @@ function ArchivePage({ data, setPage, selection, setSelection }) {
 
       <CeroTabs value={tipoCero} onChange={changeTipo} />
 
-      <div className="panel">
+      <div className="panel filters-panel">
         <label>
           Anno
           <select
@@ -1038,6 +1060,30 @@ function ArchivePage({ data, setPage, selection, setSelection }) {
             ))}
           </select>
         </label>
+
+        <label>
+          Manicchia
+          <select
+            value={manicchiaFilter}
+            onChange={(e) => setManicchiaFilter(e.target.value)}
+          >
+            <option value="all">Tutte</option>
+            {data.manicchie.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.nome}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <label>
+          Cerca
+          <input
+            value={searchText}
+            onChange={(e) => setSearchText(e.target.value)}
+            placeholder="Pezzo o muta..."
+          />
+        </label>
       </div>
 
       <h3 className="section-subtitle">Mute caricate nel {anno}</h3>
@@ -1045,7 +1091,7 @@ function ArchivePage({ data, setPage, selection, setSelection }) {
       <div className="list-card">
         {mute.length === 0 ? (
           <div className="list-empty">
-            Nessuna muta caricata nel {anno} per il {TIPO_CERO_LABEL[tipoCero]}.
+            Nessuna muta trovata nel {anno} per il {TIPO_CERO_LABEL[tipoCero]}.
           </div>
         ) : (
           mute.map((item) => (
@@ -1070,7 +1116,7 @@ function ArchivePage({ data, setPage, selection, setSelection }) {
               <div className="row-text">
                 <strong>{item.muta}</strong>
                 <span>
-                  {item.manicchiaNome} · {item.count} ceraioli
+                  {item.manicchiaNome} · {item.pezzo} · {item.count} ceraioli
                 </span>
               </div>
               <Img src={assets.arrow} alt="Apri" className="row-arrow" fallback="›" />
@@ -1955,9 +2001,11 @@ function AdminMutaPage({
       .map(([, id]) => Number(id))
       .filter(Boolean);
 
-    return sortCeraioli(visibleData.ceraioli).filter(
-      (c) => !alreadySelected.includes(c.id)
-    );
+    const pool = POSIZIONI_EXTRA.includes(posizioneCorrente)
+      ? data.ceraioli
+      : visibleData.ceraioli;
+
+    return sortCeraioli(pool).filter((c) => !alreadySelected.includes(c.id));
   }
 
   function setCeraiolo(posizione, ceraioloId) {
@@ -2147,7 +2195,7 @@ function AdminMutaPage({
                 posizione={pos}
                 value={scelte[pos] || ""}
                 onChange={(id) => setCeraiolo(pos, id)}
-                ceraioli={visibleData.ceraioli}
+                ceraioli={data.ceraioli}
                 getAvailableCeraioli={getAvailableCeraioli}
               />
             </>
@@ -3181,26 +3229,29 @@ export default function App() {
     };
   }, []);
 
-  const visibleData = getVisibleData(data, activeManicchiaId);
-
-  const [selectedCeraiolo, setSelectedCeraiolo] = useState(
-    visibleData.ceraioli[0]
-  );
-
-  const grandeData = filterByTipo(visibleData, "grande");
-  const grandeYears = getYearsByTipo(visibleData, "grande");
-  const firstGrandePezzo = grandeData.pezzi[0];
+  const [selectedCeraiolo, setSelectedCeraiolo] = useState(null);
 
   const [selection, setSelection] = useState({
     tipoCero: "grande",
-    manicchiaId: activeManicchiaId,
-    anno: grandeYears[0] || new Date().getFullYear(),
-    pezzoId: firstGrandePezzo?.id || "",
-    muta: firstGrandePezzo?.mute?.[0] || "",
+    manicchiaId: "",
+    anno: new Date().getFullYear(),
+    pezzoId: "",
+    muta: "",
   });
 
+  useEffect(() => {
+    if (!data.partecipazioni.length) return;
+    const years = getYearsByTipo(data, selection.tipoCero || "grande");
+    if (!years.includes(Number(selection.anno))) {
+      setSelection((prev) => ({
+        ...prev,
+        anno: getDefaultArchiveYear(data, prev.tipoCero || "grande"),
+      }));
+    }
+  }, [data, selection.tipoCero, selection.anno]);
+
   const content = useMemo(() => {
-    const publicData = getVisibleData(data, activeManicchiaId);
+    const publicData = data;
 
     if (page === "home") return <Home data={publicData} setPage={setPage} />;
     if (page === "privacy") return <PrivacyPage setPage={setPage} />;

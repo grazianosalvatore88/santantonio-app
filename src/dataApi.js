@@ -22,6 +22,85 @@ const titleCase = (v) =>
     .toLowerCase()
     .replace(/(^|[\s'’\-])(\p{L})/gu, (_, sep, ch) => sep + ch.toUpperCase());
 
+// --- Normalizzazione "forte" per confrontare le persone ---
+// minuscole, spazi singoli, senza accenti, apostrofi e punti.
+const normPersona = (v) =>
+  String(v ?? "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/['’.]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+
+const compatta = (v) => normPersona(v).replace(/\s+/g, "");
+
+// Vero se a e b differiscono al massimo di un carattere (refusi: "Rosssi" ~ "Rossi").
+function distanzaMax1(a, b) {
+  if (a === b) return true;
+  const la = a.length;
+  const lb = b.length;
+  if (Math.abs(la - lb) > 1) return false;
+  let i = 0;
+  let j = 0;
+  let diff = 0;
+  while (i < la && j < lb) {
+    if (a[i] === b[j]) {
+      i++;
+      j++;
+      continue;
+    }
+    diff++;
+    if (diff > 1) return false;
+    if (la === lb) {
+      i++;
+      j++;
+    } else if (la > lb) {
+      i++;
+    } else {
+      j++;
+    }
+  }
+  return diff + (la - i) + (lb - j) <= 1;
+}
+
+// Classifica un nominativo del file rispetto ai ceraioli della manicchia:
+//  { tipo: "certo", ceraiolo }            stesso nome+cognome (anche invertiti)
+//  { tipo: "sospetto", candidati: [...] } somiglianze da confermare a mano
+//  { tipo: "nuovo" }                      nessuna corrispondenza
+export function analizzaCeraioloImport(ceraioli, manicchiaId, nome, cognome) {
+  const n = normPersona(nome);
+  const c = normPersona(cognome);
+  const stessi = ceraioli.filter((x) => x.manicchiaId === manicchiaId);
+
+  const certo = stessi.find((x) => {
+    const xn = normPersona(x.nome);
+    const xc = normPersona(x.cognome);
+    return (xn === n && xc === c) || (xn === c && xc === n);
+  });
+  if (certo) return { tipo: "certo", ceraiolo: certo };
+
+  const nc = compatta(nome);
+  const cc = compatta(cognome);
+  const iniziale = (s) => s.length === 1;
+  const candidati = stessi.filter((x) => {
+    const xc = normPersona(x.cognome);
+    const xnc = compatta(x.nome);
+    if (xc === c) {
+      if (xnc === nc) return true; // "Gian Luca" ~ "Gianluca"
+      if (
+        (iniziale(nc) && xnc.startsWith(nc)) ||
+        (iniziale(xnc) && nc.startsWith(xnc))
+      )
+        return true; // "G." ~ "Gianluca"
+    }
+    // refuso di un solo carattere sul nominativo completo
+    return distanzaMax1(xnc + compatta(x.cognome), nc + cc);
+  });
+  if (candidati.length) return { tipo: "sospetto", candidati };
+  return { tipo: "nuovo" };
+}
+
 // ---------------- LETTURA ----------------
 
 export async function fetchAllData() {
@@ -223,7 +302,19 @@ export async function dbSaveMuta({ manicchiaId, tipoCero, anno, pezzo, muta, rig
 
 // IMPORT: garantisce pezzi/mute, crea i ceraioli mancanti e inserisce le partecipazioni.
 // "data" è lo stato attuale dell'app (per riconoscere ciò che già esiste).
+// Importa le righe già RISOLTE dall'anteprima. Ogni riga porta una "azione":
+//  { tipo: "esistente", ceraioloId }  -> usa il ceraiolo esistente
+//  { tipo: "nuovo" }                  -> crea il ceraiolo (una sola volta)
+//  { tipo: "salta" } o assente        -> la riga viene ignorata
+// I ceraioli esistenti non vengono MAI modificati.
 export async function dbImportRows(rows, data) {
+  const totali = rows.length;
+  rows = rows.filter(
+    (r) =>
+      r.azione && (r.azione.tipo === "esistente" || r.azione.tipo === "nuovo")
+  );
+  const saltate = totali - rows.length;
+
   // 1) Garantisci pezzi e mute
   const pezziByKey = new Map();
   data.pezzi.forEach((p) =>
@@ -266,21 +357,17 @@ export async function dbImportRows(rows, data) {
     await dbUpsertPezzo(pezzo);
   }
 
-  // 2) Crea i ceraioli mancanti
-  const ceraioloKey = (manicchiaId, nome, cognome, soprannome) =>
-    `${manicchiaId}|${norm(nome)}|${norm(cognome)}|${norm(soprannome)}`;
-  const ceraioliById = new Map();
-  data.ceraioli.forEach((c) =>
-    ceraioliById.set(
-      ceraioloKey(c.manicchiaId, c.nome, c.cognome, c.soprannome),
-      c.id
-    )
-  );
+  // 2) Crea SOLO i ceraioli decisi in anteprima (azione "nuovo"),
+  //    senza mai modificare quelli esistenti. La chiave NON usa il soprannome:
+  //    stesso nome+cognome (normalizzati) nella stessa manicchia = stessa persona.
+  const chiaveNuovo = (manicchiaId, nome, cognome) =>
+    `${manicchiaId}|${normPersona(nome)}|${normPersona(cognome)}`;
 
   const daCreare = new Map();
   rows.forEach((r) => {
-    const k = ceraioloKey(r.manicchiaId, r.nome, r.cognome, r.soprannome);
-    if (!ceraioliById.has(k) && !daCreare.has(k)) {
+    if (r.azione?.tipo !== "nuovo") return;
+    const k = chiaveNuovo(r.manicchiaId, r.nome, r.cognome);
+    if (!daCreare.has(k)) {
       daCreare.set(k, {
         manicchia_id: r.manicchiaId,
         nome: titleCase(r.nome),
@@ -290,6 +377,7 @@ export async function dbImportRows(rows, data) {
     }
   });
 
+  const nuoviId = new Map();
   let creati = 0;
   if (daCreare.size) {
     const { data: inseriti, error } = await supabase
@@ -299,10 +387,7 @@ export async function dbImportRows(rows, data) {
     if (error) throw error;
     creati = inseriti.length;
     inseriti.forEach((c) =>
-      ceraioliById.set(
-        ceraioloKey(c.manicchia_id, c.nome, c.cognome, c.soprannome),
-        c.id
-      )
+      nuoviId.set(chiaveNuovo(c.manicchia_id, c.nome, c.cognome), Number(c.id))
     );
   }
 
@@ -316,9 +401,10 @@ export async function dbImportRows(rows, data) {
 
   const daInserire = [];
   rows.forEach((r) => {
-    const ceraioloId = ceraioliById.get(
-      ceraioloKey(r.manicchiaId, r.nome, r.cognome, r.soprannome)
-    );
+    const ceraioloId =
+      r.azione?.tipo === "esistente"
+        ? Number(r.azione.ceraioloId)
+        : nuoviId.get(chiaveNuovo(r.manicchiaId, r.nome, r.cognome));
     if (!ceraioloId) return;
 
     // Usa la grafia UFFICIALE del pezzo e della muta (non quella del file).
@@ -346,7 +432,7 @@ export async function dbImportRows(rows, data) {
 
   await dbInsertPartecipazioni(daInserire);
 
-  return { importate: daInserire.length, ceraioliCreati: creati };
+  return { importate: daInserire.length, ceraioliCreati: creati, saltate };
 }
 
 // --- GESTIONE ADMIN (tramite Edge Function sicura "admin-management") ---
