@@ -901,7 +901,7 @@ function Home({ data, setPage }) {
 }
 
 // Dati modificabili per le pagine Privacy/Info
-const EMAIL_CONTATTO = "INSERISCI-EMAIL@esempio.it"; // <-- da sostituire
+const EMAIL_CONTATTO = "info@ceridigubbio.it"; //
 
 function PrivacyPage({ setPage }) {
   return (
